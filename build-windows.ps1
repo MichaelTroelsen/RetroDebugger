@@ -93,17 +93,9 @@ foreach ($tool in @('cmake','git')) {
     }
 }
 
-$msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
-    -latest -requires Microsoft.Component.MSBuild `
-    -find "MSBuild\**\Bin\MSBuild.exe" 2>$null | Select-Object -First 1
-if (-not $msbuild) {
-    Write-Error "MSBuild not found. Install Visual Studio 2022 with C++ workload."
-    exit 1
-}
-Write-Host "Using MSBuild: $msbuild"
-
-# Configure compiler toolchain
-# vcxproj files default to ClangCL; override to v143 when MSVC is selected
+# The required PlatformToolset decides which VS instance to use.
+# vcxproj files default to ClangCL; override to v143 when MSVC is selected.
+$requiredToolset = if ($Compiler -eq 'MSVC') { 'v143' } else { 'ClangCL' }
 $toolsetArgs = @()
 if ($Compiler -eq 'MSVC') {
     $toolsetArgs = @('/p:PlatformToolset=v143')
@@ -112,11 +104,43 @@ if ($Compiler -eq 'MSVC') {
     Write-Host "Compiler: Clang (ClangCL toolset)" -ForegroundColor Cyan
 }
 
+# Pick the VS instance that actually HAS $requiredToolset, not merely the newest
+# one. With side-by-side installs, `vswhere -latest` returns the newest instance,
+# which may carry neither ClangCL nor v143 (e.g. VS 2026 ships v145 only) while an
+# older instance has both. Selecting by toolset keeps both lookups on one instance;
+# picking MSBuild from one and the VC tools from another mismatches cl/lib/link.
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$candidates = @(& $vswhere -products * -requires Microsoft.Component.MSBuild `
+    -property installationPath 2>$null) | Where-Object { $_ } | Select-Object -Unique
+
+$vsInstall = $candidates | Where-Object {
+    Test-Path (Join-Path $_ "MSBuild\Microsoft\VC\*\Platforms\$Platform\PlatformToolsets\$requiredToolset")
+} | Select-Object -First 1
+
+if (-not $vsInstall) {
+    Write-Error @"
+No Visual Studio instance provides the '$requiredToolset' platform toolset for $Platform.
+Instances checked: $($candidates -join '; ')
+Install it via the VS Installer:
+  ClangCL -> "C++ Clang Compiler for Windows" + "MSBuild support for LLVM (clang-cl) toolset"
+  v143    -> "MSVC v143 - VS 2022 C++ build tools"
+"@
+    exit 1
+}
+Write-Host "Using VS instance: $vsInstall (toolset $requiredToolset)"
+
+$msbuild = Get-ChildItem (Join-Path $vsInstall "MSBuild") -Recurse -Filter MSBuild.exe `
+    -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '\\Bin\\MSBuild\.exe$' } |
+    Select-Object -First 1 -ExpandProperty FullName
+if (-not $msbuild) {
+    Write-Error "MSBuild.exe not found under $vsInstall"
+    exit 1
+}
+Write-Host "Using MSBuild: $msbuild"
+
 # Add MSBuild and VC tools (lib.exe, cl.exe) to PATH so child scripts can find them
 $env:PATH = (Split-Path $msbuild) + ";$env:PATH"
 
-$vsInstall = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
-    -latest -property installationPath 2>$null
 if ($vsInstall) {
     $hostArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'ARM64' } else { 'Hostx64' }
     $vcToolsDir = Join-Path $vsInstall "VC\Tools\MSVC"

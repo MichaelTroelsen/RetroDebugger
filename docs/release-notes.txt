@@ -1,3 +1,6 @@
+Retro Debugger v1.0.1 (19 Sep)
+Bug fixed: Windows build picked the newest Visual Studio instance instead of one providing the required toolset (ClangCL / v143), failing on machines with side-by-side VS 2022 and VS 2026 installs
+
 Retro Debugger v0.64.72 (22 Feb - my birthday celebration and BCC Party release)
 Bug fixed #73: crash when rewinding code (thanks to Tom Telmo and Isildur for testing)
 Bug fixed #69: command line arguments buffer overflow
